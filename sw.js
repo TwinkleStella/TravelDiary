@@ -1,5 +1,5 @@
 /* TravelDiary service worker: the app opens offline once visited; map data is cached as it is used. */
-const VERSION = "td-1";
+const VERSION = "td-2";
 const SHELL = ["./", "index.html", "app.js", "manifest.webmanifest", "vendor/d3.min.js", "vendor/topojson-client.min.js",
   "fonts/cg-500i.woff2", "fonts/cg-400.woff2", "icons/icon-192.png", "icons/apple-touch-icon.png", "icons/favicon-64.png",
   "data/world.json", "data/index.json"];
