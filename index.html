@@ -97,10 +97,13 @@ img { max-width: 100%; }
 .years { display: flex; gap: 14px; overflow-x: auto; padding: 12px 2px 6px; scrollbar-width: none; }
 .years::-webkit-scrollbar { display: none; }
 .yr { flex: 0 0 auto; display: grid; justify-items: center; gap: 5px; border: 0; background: none; cursor: pointer; padding: 0; }
-.ring { width: 58px; height: 58px; border-radius: 50%; padding: 2.5px; background: var(--rule); display: grid; place-items: center; }
+.yr { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+/* fixed-size block boxes so a photo's own proportions can never stretch the ring into an oval */
+.ring { display: block; flex: none; width: 58px; height: 58px; aspect-ratio: 1; border-radius: 50%; padding: 2.5px; background: var(--rule); }
 .yr.on .ring { background: var(--ig); }
-.ring-in { width: 100%; height: 100%; border-radius: 50%; background: var(--bg); padding: 2.5px; }
-.ring-in > * { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: grid; place-items: center; background: var(--surface-2); overflow: hidden; }
+.ring-in { display: block; width: 53px; height: 53px; border-radius: 50%; background: var(--bg); padding: 2.5px; overflow: hidden; }
+.ring-in > * { display: block; width: 48px; height: 48px; max-width: none; border-radius: 50%; object-fit: cover; background: var(--surface-2); overflow: hidden; pointer-events: none; }
+.ring-in .num { display: grid; place-items: center; }
 .ring-in .num { font-family: var(--f-brand); font-size: 19px; color: var(--muted); }
 .yr small { font-size: 12px; color: var(--muted); }
 .yr.on small { color: var(--fg); font-weight: 600; }
@@ -113,9 +116,10 @@ img { max-width: 100%; }
 .round svg { width: 21px; height: 21px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .round.busy svg { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.depth { position: absolute; z-index: 3; left: max(16px, env(safe-area-inset-left, 0px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 30px); display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); letter-spacing: .08em; }
-.depth i { font-style: normal; padding: 4px 8px; border-radius: 999px; }
-.depth i.on { background: var(--fg); color: var(--bg); }
+.depth { position: absolute; z-index: 3; left: max(12px, env(safe-area-inset-left, 0px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 26px); display: flex; gap: 2px; align-items: center; }
+.depth button { border: 0; background: color-mix(in srgb, var(--bg) 70%, transparent); font-size: 11px; color: var(--muted); letter-spacing: .08em; padding: 7px 9px; border-radius: 999px; cursor: pointer; }
+.depth button:hover { color: var(--fg); }
+.depth button.on { background: var(--fg); color: var(--bg); }
 .fab {
   position: absolute; z-index: 3; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
   height: 52px; padding: 0 22px 0 18px; border: 0; border-radius: 999px; background: var(--ig); color: #fff; font-size: 15px; font-weight: 600; letter-spacing: .04em;
@@ -198,6 +202,27 @@ img { max-width: 100%; }
 .when { font-size: 11px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; }
 .link { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 4px; }
 .link.danger { color: var(--danger); font-weight: 600; }
+.post-acts { display: flex; gap: 2px; flex: 0 0 auto; }
+
+/* comments */
+.cmts { display: grid; gap: 6px; padding-top: 4px; }
+.cmt { margin: 0; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; display: flex; gap: 8px; align-items: baseline; }
+.cmt .t { flex: 1; min-width: 0; white-space: pre-wrap; }
+.cmt b { font-weight: 600; margin-right: 6px; }
+.cmt small { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.cmt .link { padding: 0 2px; font-size: 11px; }
+.cmt-more { border: 0; background: none; padding: 0; color: var(--muted); font-size: 13px; cursor: pointer; text-align: left; }
+.cmt-in { display: flex; gap: 8px; align-items: center; border-top: 1px solid var(--rule); margin-top: 6px; padding-top: 10px; }
+.cmt-in input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--fg); font: inherit; font-size: 15px; padding: 4px 0; }
+.cmt-in input:focus { outline: none; }
+.cmt-in button { border: 0; background: none; color: #d62976; font-weight: 600; font-size: 14px; cursor: pointer; padding: 4px; }
+.cmt-in button:disabled { opacity: .35; cursor: default; }
+.edited { color: var(--muted); }
+
+/* share poster */
+.share-wrap { padding: 16px; display: grid; gap: 14px; }
+.share-img { width: 100%; border-radius: 14px; display: block; box-shadow: var(--shadow); background: #06080e; aspect-ratio: 3 / 4; object-fit: cover; }
+.share-wait { aspect-ratio: 3 / 4; border-radius: 14px; background: #06080e; color: #b9a77e; display: grid; place-items: center; font-family: var(--f-brand); font-style: italic; font-size: 22px; }
 
 /* composer */
 .compose { display: grid; gap: 0; }
@@ -211,8 +236,13 @@ img { max-width: 100%; }
 .compose textarea:focus { outline: none; }
 .compose textarea::placeholder { color: var(--muted); }
 .ph-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 0 16px 14px; }
-.ph { position: relative; aspect-ratio: 1; border-radius: 6px; overflow: hidden; background: var(--surface-2); }
-.ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ph { position: relative; aspect-ratio: 1; border-radius: 6px; overflow: hidden; background: var(--surface-2); cursor: grab; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: opacity .15s; }
+.ph img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.ph.lifted { opacity: .25; }
+.ph-ghost { position: fixed; z-index: 50; pointer-events: none; border-radius: 8px; overflow: hidden; box-shadow: 0 16px 36px -8px rgba(0, 0, 0, .45); transform: scale(1.08); opacity: .95; }
+.ph-ghost img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ph-ghost .x, .ph-ghost .first { display: none; }
+.ph-tip { padding: 0 16px 12px; margin-top: -6px; font-size: 12px; color: var(--muted); }
 .ph .x { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, .55); color: #fff; font-size: 14px; line-height: 22px; padding: 0; cursor: pointer; }
 .ph .first { position: absolute; left: 4px; bottom: 4px; font-size: 10px; background: rgba(0, 0, 0, .55); color: #fff; padding: 1px 6px; border-radius: 999px; }
 .add { aspect-ratio: 1; border-radius: 6px; border: 1px dashed var(--land-line); display: grid; place-items: center; cursor: pointer; color: var(--muted); text-align: center; font-size: 11px; line-height: 1.3; background: var(--surface); }
@@ -229,8 +259,11 @@ img { max-width: 100%; }
 /* yearbook (profile) */
 .prof { padding: 18px 16px 12px; display: grid; gap: 14px; }
 .prof-top { display: flex; align-items: center; gap: 18px; }
-.prof-av { width: 84px; height: 84px; border-radius: 50%; padding: 3px; background: var(--ig); flex: 0 0 auto; }
-.prof-av img { width: 100%; height: 100%; border-radius: 50%; border: 3px solid var(--surface); object-fit: cover; display: block; }
+.prof-av { position: relative; width: 84px; height: 84px; border-radius: 50%; padding: 3px; background: var(--ig); flex: 0 0 auto; border: 0; cursor: pointer; display: block; }
+.prof-av img { width: 78px; height: 78px; max-width: none; border-radius: 50%; border: 3px solid var(--surface); object-fit: cover; display: block; }
+.prof-av .cam { position: absolute; right: -2px; bottom: -2px; width: 28px; height: 28px; border-radius: 50%; background: var(--fg); color: var(--bg); border: 2px solid var(--surface); display: grid; place-items: center; }
+.prof-av .cam svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.prof-links { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .prof-nums { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); text-align: center; gap: 4px; }
 .prof-nums b { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .prof-nums small { font-size: 11px; color: var(--muted); }
@@ -284,6 +317,7 @@ img { max-width: 100%; }
       <div class="brand"><b>TravelDiary</b><span>旅行日记</span></div>
       <div class="bar-actions">
         <button class="ib" id="btnSearch" type="button" aria-label="搜索地点"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></button>
+        <button class="ib" id="btnShare" type="button" aria-label="分享探索进度"><svg viewBox="0 0 24 24"><path d="M12 15V3.5M7.5 8L12 3.5 16.5 8"/><path d="M5 12.5v6a2 2 0 002 2h10a2 2 0 002-2v-6"/></svg></button>
         <button class="ib" id="btnBook" type="button" aria-label="旅行图鉴"><svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M3.5 9.2h17M3.5 14.8h17M9.2 3.5v17M14.8 3.5v17"/></svg></button>
         <button class="ib" id="btnMore" type="button" aria-label="备份与设置"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg></button>
       </div>
@@ -292,7 +326,7 @@ img { max-width: 100%; }
     <div class="stats" id="stats" aria-live="polite"></div>
   </header>
 
-  <div class="depth" id="depth" aria-hidden="true"><i data-l="c">国家</i><i data-l="a">省 · 州</i><i data-l="y">城市</i></div>
+  <div class="depth" id="depth" role="group" aria-label="切换地图层级"><button type="button" data-l="c">国家</button><button type="button" data-l="a">省 · 州</button><button type="button" data-l="y">城市</button></div>
   <div class="ctrl">
     <button class="round" id="btnLocate" type="button" aria-label="此刻所在"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="8"/><path d="M12 1.8v3M12 19.2v3M1.8 12h3M19.2 12h3"/></svg></button>
     <button class="round" id="zin" type="button" aria-label="放大"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>

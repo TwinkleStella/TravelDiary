@@ -1,0 +1,132 @@
+<!doctype html>
+<!-- Draws the TravelDiary app icon (1024px) from the app's own map data.
+     Open through a static server, or run tools/make-icons.js to export every size. -->
+<meta charset="utf-8">
+<style>
+@font-face { font-family: "Cormorant"; src: url("../fonts/cg-500i.woff2") format("woff2"); font-style: italic; font-weight: 500; }
+body { margin: 0; background: #222; }
+canvas { display: block; }
+</style>
+<canvas id="c" width="1024" height="1024"></canvas>
+<script src="../vendor/d3.min.js"></script>
+<script src="../vendor/topojson-client.min.js"></script>
+<script>
+(async () => {
+  const S = 1024;
+  const world = await (await fetch("../data/world.json")).json();
+  await document.fonts.load('italic 500 300px "Cormorant"');
+  const land = topojson.feature(world.world, world.world.objects.countries).features;
+  for (const f of land) { f.b = d3.geoBounds(f); }
+
+  // Places that glow on the icon: a traveller's trail across Asia and Europe.
+  const LIT = { "156": "#ffd27a", "392": "#ff9fb4", "410": "#ffc58a", "764": "#ffb070", "704": "#ffd98f", "458": "#ffbf7a",
+                "360": "#ffcf8a", "250": "#ff9fb4", "380": "#ffc27a", "724": "#ffd27a", "826": "#ffb3c4", "276": "#ffd98f",
+                "356": "#ffbf7a", "784": "#ffd27a", "702": "#ffd27a", "608": "#ffb070", "036": "#ffc58a" };
+
+  // fibonacci sphere: evenly spaced dots
+  const N = 5200, pts = [];
+  const ga = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < N; i++) {
+    const y = 1 - (i + .5) / N * 2, rr = Math.sqrt(1 - y * y), th = ga * i;
+    pts.push([Math.atan2(Math.sin(th) * rr, Math.cos(th) * rr) * 180 / Math.PI, Math.asin(y) * 180 / Math.PI]);
+  }
+  function landAt(ll) {
+    for (const f of land) {
+      const [[x0, y0], [x1, y1]] = f.b;
+      if (ll[1] < y0 || ll[1] > y1) continue;
+      if (x0 <= x1 && (ll[0] < x0 || ll[0] > x1)) continue;
+      if (d3.geoContains(f, ll)) return f;
+    }
+    return null;
+  }
+  const dots = pts.map((ll) => ({ ll, f: landAt(ll) })).filter((d) => d.f && d.f.id !== "010");
+
+  window.draw = function (ctx, scale) {
+    ctx.save();
+    // background: deep night with a soft lift behind the globe
+    const bg = ctx.createRadialGradient(S * .5, S * .58, 0, S * .5, S * .5, S * .78);
+    bg.addColorStop(0, "#16203a"); bg.addColorStop(.55, "#0a0f1e"); bg.addColorStop(1, "#04060c");
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, S, S);
+    ctx.translate(S / 2, S / 2); ctx.scale(scale, scale); ctx.translate(-S / 2, -S / 2);
+
+    // faint stars
+    let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < 70; i++) {
+      const x = rnd() * S, y = rnd() * S, a = .08 + rnd() * .3, r = .8 + rnd() * 1.6;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fillStyle = `rgba(220,228,255,${a})`; ctx.fill();
+    }
+
+    const cx = S / 2, cy = S * .645, R = S * .275;
+    const proj = d3.geoOrthographic().translate([cx, cy]).scale(R).rotate([-82, -18, 0]).clipAngle(90);
+    const path = d3.geoPath(proj, ctx);
+
+    // atmosphere
+    const atm = ctx.createRadialGradient(cx, cy, R * .92, cx, cy, R * 1.18);
+    atm.addColorStop(0, "rgba(110,150,255,.32)"); atm.addColorStop(1, "rgba(110,150,255,0)");
+    ctx.fillStyle = atm; ctx.beginPath(); ctx.arc(cx, cy, R * 1.18, 0, 7); ctx.fill();
+    // sphere
+    const sp = ctx.createRadialGradient(cx - R * .38, cy - R * .42, R * .05, cx, cy, R);
+    sp.addColorStop(0, "#1d2a4a"); sp.addColorStop(.6, "#0e1629"); sp.addColorStop(1, "#070b16");
+    ctx.beginPath(); path({ type: "Sphere" }); ctx.fillStyle = sp; ctx.fill();
+
+    // light comes from the upper left: dots fade toward the night side
+    const sun = [-.55, -.62, .56]; const sl = Math.hypot(...sun); sun.forEach((v, i) => (sun[i] = v / sl));
+    const cen = [82, 18];
+    const dim = [], glow = [];
+    for (const d of dots) {
+      const dist = d3.geoDistance(d.ll, cen); if (dist > Math.PI / 2 - .03) continue;
+      const p = proj(d.ll); if (!p) continue;
+      const nx = (p[0] - cx) / R, ny = (p[1] - cy) / R, nz = Math.sqrt(Math.max(0, 1 - nx * nx - ny * ny));
+      const light = Math.max(0, nx * sun[0] + ny * sun[1] + nz * sun[2]);
+      const fore = .5 + .5 * Math.cos(dist);
+      const col = LIT[d.f.id];
+      (col ? glow : dim).push({ p, light, fore, col });
+    }
+    for (const d of dim) {
+      ctx.beginPath(); ctx.arc(d.p[0], d.p[1], 3.6 * d.fore, 0, 7);
+      ctx.fillStyle = `rgba(150,172,220,${.12 + .38 * d.light})`; ctx.fill();
+    }
+    ctx.save(); ctx.globalCompositeOperation = "lighter";
+    for (const d of glow) {
+      ctx.shadowColor = d.col; ctx.shadowBlur = 14;
+      ctx.beginPath(); ctx.arc(d.p[0], d.p[1], 4.3 * d.fore, 0, 7);
+      ctx.globalAlpha = .55 + .45 * Math.max(.35, d.light); ctx.fillStyle = d.col; ctx.fill();
+    }
+    ctx.restore();
+    // a few brighter "stars" over the brightest places
+    for (const ll of [[121.5, 31.2], [139.7, 35.7], [2.35, 48.86], [100.5, 13.75], [126.98, 37.57], [116.4, 39.9], [103.8, 1.35]]) {
+      if (d3.geoDistance(ll, cen) > Math.PI / 2 - .1) continue;
+      const p = proj(ll); sparkle(ctx, p[0], p[1], 15);
+    }
+    // rim light
+    ctx.beginPath(); path({ type: "Sphere" }); ctx.lineWidth = 2; ctx.strokeStyle = "rgba(170,195,255,.28)"; ctx.stroke();
+
+    // monogram
+    const g = ctx.createLinearGradient(0, S * .1, 0, S * .29);
+    g.addColorStop(0, "#fff4d8"); g.addColorStop(.5, "#e8c47c"); g.addColorStop(1, "#c99a4a");
+    ctx.font = 'italic 500 250px "Cormorant"'; ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+    ctx.shadowColor = "rgba(255,210,140,.35)"; ctx.shadowBlur = 24;
+    ctx.fillStyle = g; ctx.fillText("TD", S / 2 - 6, S * .275);
+    ctx.shadowBlur = 0;
+    // a thin flourish under the letters
+    ctx.beginPath(); ctx.moveTo(S * .37, S * .3); ctx.quadraticCurveTo(S * .5, S * .318, S * .63, S * .294);
+    ctx.lineWidth = 2.4; ctx.strokeStyle = "rgba(232,196,124,.7)"; ctx.lineCap = "round"; ctx.stroke();
+    sparkle(ctx, S * .645, S * .292, 12);
+    ctx.restore();
+  };
+  function sparkle(ctx, x, y, r) {
+    ctx.save(); ctx.globalCompositeOperation = "lighter";
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r * 1.6);
+    g.addColorStop(0, "rgba(255,246,220,.95)"); g.addColorStop(.25, "rgba(255,220,150,.45)"); g.addColorStop(1, "rgba(255,200,120,0)");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 1.6, 0, 7); ctx.fill();
+    ctx.fillStyle = "rgba(255,248,228,.95)";
+    ctx.beginPath();
+    ctx.moveTo(x, y - r); ctx.quadraticCurveTo(x, y, x + r * .9, y); ctx.quadraticCurveTo(x, y, x, y + r);
+    ctx.quadraticCurveTo(x, y, x - r * .9, y); ctx.quadraticCurveTo(x, y, x, y - r); ctx.fill();
+    ctx.restore();
+  }
+  const scale = +(new URLSearchParams(location.search).get("scale") || 1);
+  window.draw(document.getElementById("c").getContext("2d"), scale);
+  window.done = true;
+})();
+</script>

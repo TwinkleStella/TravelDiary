@@ -37,6 +37,7 @@
     globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.8 2.6 14.2 0 17M12 3.5c-2.6 2.8-2.6 14.2 0 17"/>',
     city: '<path d="M4 20V9l5-3v14M9 20V4l7 3v13M16 20v-8l4 2v6M2.5 20h19"/>',
     map: '<path d="M9 4l6 2 5-2v14l-5 2-6-2-5 2V6z"/><path d="M9 4v14M15 6v14"/>',
+    cam: '<path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3v10H4z"/><circle cx="12" cy="13.2" r="3.2"/>',
   };
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const hash = (s) => { let x = 2166136261; for (let i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 16777619); } return x >>> 0; };
@@ -45,6 +46,30 @@
   const fmtDate = (s) => { if (!s) return ""; const [y, m, d] = s.split("-"); return `${y} 年 ${+m} 月 ${+d} 日`; };
   const fmtCoord = ([lon, lat]) => `${Math.abs(lat).toFixed(2)}°${lat >= 0 ? "N" : "S"} · ${Math.abs(lon).toFixed(2)}°${lon >= 0 ? "E" : "W"}`;
   const yearOf = (e) => +(e.date || "").slice(0, 4) || new Date(e.createdAt).getFullYear();
+  const yearLabel = (y) => (y === "all" ? "人生" : String(y));
+  const newId = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  function fmtAgo(t) {
+    const d = Date.now() - t, dt = new Date(t);
+    if (d < 60e3) return "刚刚";
+    if (d < 3600e3) return Math.floor(d / 60e3) + " 分钟前";
+    if (d < 86400e3) return Math.floor(d / 3600e3) + " 小时前";
+    return (dt.getFullYear() === new Date().getFullYear() ? "" : dt.getFullYear() + " 年 ") + `${dt.getMonth() + 1} 月 ${dt.getDate()} 日`;
+  }
+  // a button that needs a second tap within a few seconds, for anything that deletes
+  function confirmButton(label, armedLabel, run) {
+    const b = h("button", { class: "link", type: "button" }, label);
+    let armed = false;
+    b.onclick = async () => {
+      if (!armed) {
+        armed = true; b.textContent = armedLabel; b.classList.add("danger");
+        setTimeout(() => { if (!b.disabled) { armed = false; b.textContent = label; b.classList.remove("danger"); } }, 3500);
+        return;
+      }
+      b.disabled = true;
+      try { await run(); } catch (e) { b.disabled = false; toast("没成功，再试一次"); }
+    };
+    return b;
+  }
 
   function countryColor(id) {
     const i = FIXED[id] != null ? FIXED[id] : hash("c" + id) % PALETTE.length;
@@ -140,15 +165,19 @@
   function openDB() {
     return new Promise((res) => {
       try {
-        const rq = indexedDB.open("traveldiary", 1);
-        rq.onupgradeneeded = () => rq.result.createObjectStore("moments", { keyPath: "id" });
+        const rq = indexedDB.open("traveldiary", 2);
+        rq.onupgradeneeded = () => {
+          const db = rq.result;
+          if (!db.objectStoreNames.contains("moments")) db.createObjectStore("moments", { keyPath: "id" });
+          if (!db.objectStoreNames.contains("kv")) db.createObjectStore("kv", { keyPath: "id" });
+        };
         rq.onsuccess = () => res(rq.result); rq.onerror = () => res(null); rq.onblocked = () => res(null);
       } catch { res(null); }
     });
   }
-  function tx(mode, fn) {
+  function tx(mode, fn, store = "moments") {
     return new Promise((res, rej) => {
-      const t = idb.transaction("moments", mode); const st = t.objectStore("moments"); const rq = fn(st);
+      const t = idb.transaction(store, mode); const st = t.objectStore(store); const rq = fn(st);
       t.oncomplete = () => res(rq && rq.result); t.onerror = t.onabort = () => rej(t.error || new Error("存储失败"));
     });
   }
@@ -156,8 +185,34 @@
     idb = await openDB();
     if (!idb) { moments = []; toast("这个浏览器不支持本地存储，记录无法保存。试试 Safari 或 Chrome。", 5000); return; }
     moments = (await tx("readonly", (s) => s.getAll())) || [];
+    try {
+      for (const r of (await tx("readonly", (s) => s.getAll(), "kv")) || []) if (r.id.startsWith("avatar:")) avatars.set(r.id.slice(7), r);
+    } catch (e) { console.warn(e); }
   }
   async function putMoment(m) { await tx("readwrite", (s) => s.put(m)); }
+  function replaceMoment(m) { moments = moments.map((x) => (x.id === m.id ? m : x)); }
+
+  // ---------------------------------------------------------------- avatars (one per ring: "all" and each year)
+  const avatars = new Map(); // "all" | "2026" -> { id, blob }
+  function avatarFor(y, list) { return avatars.get(String(y)) || coverFor(list); }
+  const avatarIn = h("input", { type: "file", accept: "image/*", class: "sr", "aria-hidden": "true", tabindex: "-1" });
+  document.body.append(avatarIn);
+  function pickAvatar(y) { avatarIn.dataset.y = String(y); avatarIn.value = ""; avatarIn.click(); }
+  avatarIn.onchange = async () => {
+    const f = avatarIn.files[0], y = avatarIn.dataset.y; avatarIn.value = "";
+    if (!f || !idb) return;
+    try {
+      const blob = await squareImage(f);
+      const rec = { id: "avatar:" + y, blob };
+      await tx("readwrite", (s) => s.put(rec), "kv");
+      avatars.set(y, rec); recompute();
+      toast(`「${yearLabel(y === "all" ? "all" : +y)}」换上了新头像`);
+    } catch (e) { console.error(e); toast("这张图片读不出来，换一张试试（HEIC 请先转成 JPG）"); }
+  };
+  async function resetAvatar(y) {
+    await tx("readwrite", (s) => s.delete("avatar:" + y), "kv");
+    avatars.delete(String(y)); recompute(); toast("已换回默认头像");
+  }
   async function delMoment(id) { await tx("readwrite", (s) => s.delete(id)); }
 
   // ---------------------------------------------------------------- derived state
@@ -194,15 +249,27 @@
     return [...ys].sort((a, b) => b - a);
   }
   function coverFor(list) { const m = list.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0]; return m && m.photos && m.photos[0]; }
+  const yearItems = () => [{ y: "all", label: yearLabel("all") }, ...yearsList().map((y) => ({ y, label: String(y) }))];
   function renderYears() {
-    const items = [{ y: "all", label: "此生" }, ...yearsList().map((y) => ({ y, label: String(y) }))];
-    $("#years").replaceChildren(...items.map(({ y, label }) => {
+    $("#years").replaceChildren(...yearItems().map(({ y, label }) => {
       const list = y === "all" ? moments : moments.filter((m) => yearOf(m) === y);
-      const cov = coverFor(list);
+      const cov = avatarFor(y, list);
       const inner = cov ? h("img", { src: srcOf(cov), alt: "" }) : (y === "all" ? h("img", { src: "icons/icon-192.png", alt: "" }) : h("div", { class: "num" }, String(y).slice(2)));
-      return h("button", { class: "yr" + (state.year === y ? " on" : ""), type: "button", "aria-pressed": state.year === y ? "true" : "false",
-        onclick: () => { state.year = y; recompute(); if (state.sheet && state.sheet.type === "book") renderSheet(); } },
+      let timer = 0, long = false;
+      const btn = h("button", { class: "yr" + (state.year === y ? " on" : ""), type: "button", "aria-pressed": state.year === y ? "true" : "false", title: "长按更换头像",
+        onclick: () => { if (long) { long = false; return; } state.year = y; recompute(); } },
         h("div", { class: "ring" }, h("div", { class: "ring-in" }, inner)), h("small", null, label));
+      // long-press a ring to give it your own picture; the picker opens on release so it counts as a tap
+      btn.addEventListener("pointerdown", (e) => {
+        if (e.button) return;
+        long = false; clearTimeout(timer);
+        timer = setTimeout(() => { long = true; try { navigator.vibrate && navigator.vibrate(10); } catch {} }, 480);
+      });
+      btn.addEventListener("pointerup", () => { clearTimeout(timer); if (long) pickAvatar(y); });
+      btn.addEventListener("pointercancel", () => { clearTimeout(timer); long = false; });
+      btn.addEventListener("pointerleave", () => clearTimeout(timer));
+      btn.addEventListener("contextmenu", (e) => e.preventDefault());
+      return btn;
     }));
   }
 
@@ -430,8 +497,24 @@
   }
   function updateDepth() {
     const L = level();
-    document.querySelectorAll("#depth i").forEach((i) => i.classList.toggle("on", i.dataset.l === L));
+    document.querySelectorAll("#depth button").forEach((b) => { b.classList.toggle("on", b.dataset.l === L); b.setAttribute("aria-pressed", b.dataset.l === L ? "true" : "false"); });
   }
+  // tap 国家 / 省·州 / 城市 to jump straight to that zoom
+  function jumpLevel(L) {
+    hideHint();
+    const target = L === "c" ? 1.05 : L === "a" ? K_A1 + .9 : K_CITY + 1.5;
+    let ll = center();
+    if (L === "y") {
+      // cities are split only inside China: go there when looking somewhere else
+      const cn = byKey.get("C:" + CN);
+      if (cn && d3.geoDistance(ll, cn.c) > .42) {
+        const m = moments.filter((x) => x.keys.y && byKey.has(x.keys.y)).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+        ll = m ? byKey.get(m.keys.y).c : [113, 31];
+      }
+    }
+    flyTo(ll, target, 800);
+  }
+  document.querySelectorAll("#depth button").forEach((b) => { b.onclick = () => jumpLevel(b.dataset.l); });
   function hideHint() { const el = $("#hint"); if (el) el.remove(); }
 
   function inB(f, lon, lat) {
@@ -482,6 +565,7 @@
   $("#btnLocate").onclick = () => locate((chain, me) => { openPlaceChain(chain); });
   $("#fab").onclick = () => openComposer(null);
   $("#btnBook").onclick = () => openSheet({ type: "book" }, true);
+  $("#btnShare").onclick = () => openSheet({ type: "share" }, true);
   $("#btnSearch").onclick = () => openSheet({ type: "search", mode: "go" }, true);
   $("#btnMore").onclick = () => openSheet({ type: "more" }, true);
   $("#pickCancel").onclick = () => { const back = state.pickReturn; endPick(); if (back) openSheet(back, false); };
@@ -637,13 +721,14 @@
     else if (v.type === "book") parts = bookView(v);
     else if (v.type === "search") parts = searchView(v);
     else if (v.type === "post") parts = postView(v);
+    else if (v.type === "share") parts = shareView(v);
     else parts = moreView(v);
     sh.classList.toggle("short", v.type === "more");
     sh.replaceChildren(...parts);
     sh.dataset.v = viewId(v);
     const nb = sh.querySelector(".sh-body"); if (nb && keep) nb.scrollTop = keep;
   }
-  const viewId = (v) => v.type + ":" + (v.key || v.id || "");
+  const viewId = (v) => v.type + ":" + (v.key || v.id || v.year || "");
 
   // ----- place
   function openPlace(f, fly) {
@@ -724,14 +809,12 @@
     const name = m.place ? m.place.name : (m.names.y || m.names.a || m.names.c);
     const crumbs = [m.names.c, m.names.a, m.names.y, m.place && m.place.name].filter(Boolean);
     const photos = m.photos || [];
-    const del = h("button", { class: "link", type: "button" }, "删除");
-    let armed = false;
-    del.onclick = async () => {
-      if (!armed) { armed = true; del.textContent = "再点一次删除"; del.classList.add("danger"); setTimeout(() => { if (!del.disabled) { armed = false; del.textContent = "删除"; del.classList.remove("danger"); } }, 3500); return; }
-      del.disabled = true;
-      try { await delMoment(m.id); moments = moments.filter((x) => x.id !== m.id); toast("这个瞬间已删除"); if (state.sheet && state.sheet.type === "post") back(); recompute(); }
-      catch (e) { del.disabled = false; toast("没删掉，再试一次"); }
-    };
+    const edit = h("button", { class: "link", type: "button", onclick: () => openEditor(m) }, "编辑");
+    const del = confirmButton("删除", "再点一次删除", async () => {
+      await delMoment(m.id); moments = moments.filter((x) => x.id !== m.id); toast("这个瞬间已删除");
+      if (state.sheet && state.sheet.type === "post") back();
+      recompute();
+    });
     const count = h("span", { class: "car-count" }, `1/${photos.length}`);
     const dots = h("div", { class: "dots" }, photos.length > 1 ? photos.slice(0, 12).map((_, i) => h("i", { class: i === 0 ? "on" : "" })) : null);
     const track = h("div", { class: "car-track" }, photos.map((p, i) => h("button", { type: "button", "aria-label": `查看第 ${i + 1} 张`, onclick: () => openLightbox(photos, i) }, h("img", { src: srcOf(p), alt: "", loading: "lazy", decoding: "async" }))));
@@ -743,12 +826,41 @@
     return h("article", { class: "post" },
       h("div", { class: "post-h" },
         h("div", { class: "av" }, h("span", { style: `--c:${col}` }, name.slice(0, 1))),
-        h("div", { class: "who" }, h("b", null, name), h("small", null, crumbs.join(" · "))), del),
+        h("div", { class: "who" }, h("b", null, name), h("small", null, crumbs.join(" · "))), h("div", { class: "post-acts" }, edit, del)),
       photos.length ? h("div", { class: "car" }, track, photos.length > 1 ? count : null) : null,
       photos.length > 1 ? dots : null,
       h("div", { class: "post-b" },
         m.note ? h("p", { class: "cap" }, m.note) : null,
-        h("div", { class: "when" }, h("span", null, fmtDate(m.date)))));
+        h("div", { class: "when" }, h("span", null, fmtDate(m.date), m.updatedAt ? h("span", { class: "edited" }, " · 已编辑") : null)),
+        commentsBlock(m)));
+  }
+  const openComments = new Set(); // posts whose full comment list is expanded
+  function commentsBlock(m) {
+    const list = m.comments || [];
+    const wrap = h("div", { class: "cmts" });
+    const all = list.length <= 3 || openComments.has(m.id);
+    if (!all) wrap.append(h("button", { class: "cmt-more", type: "button", onclick: () => { openComments.add(m.id); renderSheet(); } }, `查看全部 ${list.length} 条评论`));
+    for (const c of all ? list : list.slice(-2)) {
+      const del = confirmButton("删除", "确认删除", async () => {
+        const next = { ...m, comments: list.filter((x) => x.id !== c.id) };
+        await putMoment(next); replaceMoment(next); renderSheet();
+      });
+      wrap.append(h("p", { class: "cmt" }, h("span", { class: "t" }, h("b", null, "我"), c.text), h("small", null, fmtAgo(c.at)), del));
+    }
+    const input = h("input", { type: "text", placeholder: "添加评论…", maxlength: "1000", "aria-label": "添加评论", enterkeyhint: "send" });
+    const send = h("button", { type: "button", disabled: true }, "发布");
+    input.oninput = () => { send.disabled = !input.value.trim(); };
+    const submit = async () => {
+      const text = input.value.trim(); if (!text || send.dataset.busy) return;
+      send.dataset.busy = "1"; send.disabled = true;
+      const next = { ...m, comments: [...list, { id: newId("c"), text, at: Date.now() }] };
+      try { await putMoment(next); replaceMoment(next); renderSheet(); }
+      catch (e) { delete send.dataset.busy; send.disabled = false; toast("评论没发出去，再试一次"); }
+    };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); } });
+    send.onclick = submit;
+    wrap.append(h("div", { class: "cmt-in" }, input, send));
+    return wrap;
   }
   function postView(v) {
     const m = moments.find((x) => x.id === v.id);
@@ -758,14 +870,21 @@
   }
 
   // ----- composer
-  const draft = { chain: null, note: "", date: today(), files: [] };
+  // A draft holds photo items in display order: { url, file } for new photos, { url, photo } for ones already saved.
+  const newDraft = { id: null, chain: null, note: "", date: today(), items: [] };
+  let draft = newDraft;
   function openComposer(ch) {
+    draft = newDraft;
     if (ch) draft.chain = ch;
-    else if (!draft.chain) draft.chain = null;
     openSheet({ type: "compose" }, !ch);
   }
-  function composeView() {
-    const ch = draft.chain;
+  async function openEditor(m) {
+    const ch = await chainFromMoment(m);
+    draft = { id: m.id, chain: ch, note: m.note || "", date: m.date || today(), items: (m.photos || []).map((p) => ({ photo: p, url: srcOf(p) })) };
+    openSheet({ type: "compose", id: m.id }, false);
+  }
+  function composeView(v) {
+    const ch = draft.chain, editing = !!draft.id;
     const body = h("div", { class: "sh-body compose" });
     // location
     const locBox = h("div", { class: "loc" }, svg(ICON.pin),
@@ -773,10 +892,11 @@
     const opts = h("div", { class: "loc-opts" },
       h("button", { class: "btn-line", type: "button", onclick: () => locate((c2) => { draft.chain = c2; renderSheet(); flyTo(c2.place ? [c2.place.lon, c2.place.lat] : finest(c2).c, fitK(finest(c2))); }) }, "此刻所在"),
       h("button", { class: "btn-line", type: "button", onclick: () => openSheet({ type: "search", mode: "pick" }, false) }, "搜索地点"),
-      h("button", { class: "btn-line", type: "button", onclick: () => startPick((c2) => { draft.chain = c2; openSheet({ type: "compose" }, true); }) }, "在地图上选"));
+      h("button", { class: "btn-line", type: "button", onclick: () => startPick((c2) => { draft.chain = c2; openSheet(v, true); }) }, "在地图上选"));
     const ta = h("textarea", { id: "note", "aria-label": "这一刻的文字", placeholder: "此刻的光线、风，和你。", maxlength: "5000" });
     ta.value = draft.note;
     const grid = h("div", { class: "ph-grid" });
+    const tip = h("div", { class: "ph-tip" }, "按住照片拖动，可以调整顺序；排第一的是封面。");
     const fileIn = h("input", { type: "file", accept: "image/*", multiple: true, class: "sr", id: "photos" });
     const dateIn = h("input", { type: "date", id: "date", value: draft.date, max: today() });
     const need = h("div", { class: "need" });
@@ -786,25 +906,77 @@
     function validate() {
       const lack = [];
       if (!draft.chain) lack.push("一个地点");
-      if (!draft.files.length) lack.push("一张照片");
+      if (!draft.items.length) lack.push("一张照片");
       if (!draft.note.trim()) lack.push("一句话");
-      need.textContent = lack.length ? "还差" + lack.join("、") : `${draft.files.length} 张照片 · 准备好了`;
+      need.textContent = lack.length ? "还差" + lack.join("、") : `${draft.items.length} 张照片 · 准备好了`;
       go.disabled = lack.length > 0;
       const already = draft.chain && momentsFor(finest(draft.chain).key, draft.chain.place).length;
-      go.textContent = already ? "留下这个瞬间" : "点亮";
+      go.textContent = editing ? "保存修改" : already ? "留下这个瞬间" : "点亮";
     }
     function drawGrid() {
       grid.replaceChildren(
-        ...draft.files.map((x, i) => h("div", { class: "ph" }, h("img", { src: x.url, alt: "" }),
+        ...draft.items.map((x, i) => draggable(h("div", { class: "ph", "data-i": i }, h("img", { src: x.url, alt: "", draggable: "false" }),
           i === 0 ? h("span", { class: "first" }, "封面") : null,
-          h("button", { class: "x", type: "button", "aria-label": "移除", onclick: () => { URL.revokeObjectURL(x.url); draft.files.splice(i, 1); drawGrid(); validate(); } }, "×"))),
-        ...(draft.files.length < MAX_PHOTOS ? [h("label", { class: "add", for: "photos" }, h("div", null, h("b", null, "+"), draft.files.length ? "继续添加" : "添加照片"))] : []));
+          h("button", { class: "x", type: "button", "aria-label": "移除", onclick: () => { if (x.file) URL.revokeObjectURL(x.url); draft.items.splice(i, 1); drawGrid(); validate(); } }, "×")))),
+        ...(draft.items.length < MAX_PHOTOS ? [h("label", { class: "add", for: "photos" }, h("div", null, h("b", null, "+"), draft.items.length ? "继续添加" : "添加照片"))] : []));
+      tip.hidden = draft.items.length < 2;
     }
+
+    // ---- drag to reorder: mouse drags at once; on touch, hold for a moment first so the sheet can still scroll
+    let dragging = null;
+    grid.addEventListener("touchmove", (e) => { if (dragging) e.preventDefault(); }, { passive: false });
+    function draggable(tile) {
+      tile.addEventListener("contextmenu", (e) => e.preventDefault());
+      tile.addEventListener("pointerdown", (e) => {
+        if (e.button || dragging || e.target.closest(".x")) return;
+        const sx = e.clientX, sy = e.clientY, touch = e.pointerType !== "mouse";
+        let timer = 0, last = e;
+        const follow = (ev) => {
+          const d = dragging;
+          d.ghost.style.left = ev.clientX - d.dx + "px"; d.ghost.style.top = ev.clientY - d.dy + "px";
+          const under = document.elementFromPoint(ev.clientX, ev.clientY);
+          const target = under && under.closest(".ph");
+          if (target && target !== tile && target.parentNode === grid) {
+            const kids = [...grid.children], a = kids.indexOf(tile), b = kids.indexOf(target);
+            grid.insertBefore(tile, a < b ? target.nextSibling : target);
+          }
+          const sb = grid.closest(".sh-body");
+          if (sb) { const r = sb.getBoundingClientRect(); if (ev.clientY < r.top + 48) sb.scrollTop -= 14; else if (ev.clientY > r.bottom - 48) sb.scrollTop += 14; }
+        };
+        const begin = () => {
+          const r = tile.getBoundingClientRect();
+          const ghost = tile.cloneNode(true); ghost.className = "ph-ghost";
+          Object.assign(ghost.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
+          document.body.append(ghost);
+          tile.classList.add("lifted");
+          dragging = { ghost, dx: sx - r.left, dy: sy - r.top };
+          try { navigator.vibrate && navigator.vibrate(8); } catch {}
+          follow(last);
+        };
+        const move = (ev) => {
+          last = ev;
+          if (dragging) { follow(ev); return; }
+          if (Math.hypot(ev.clientX - sx, ev.clientY - sy) > 8) { if (touch) end(); else begin(); }
+        };
+        const end = () => {
+          clearTimeout(timer);
+          removeEventListener("pointermove", move); removeEventListener("pointerup", end); removeEventListener("pointercancel", end);
+          if (!dragging) return;
+          dragging.ghost.remove(); dragging = null;
+          draft.items = [...grid.querySelectorAll(".ph")].map((t) => draft.items[+t.dataset.i]);
+          drawGrid();
+        };
+        if (touch) timer = setTimeout(begin, 260);
+        addEventListener("pointermove", move); addEventListener("pointerup", end); addEventListener("pointercancel", end);
+      });
+      return tile;
+    }
+
     fileIn.onchange = () => {
       for (const file of fileIn.files) {
-        if (draft.files.length >= MAX_PHOTOS) { toast(`一个瞬间最多 ${MAX_PHOTOS} 张照片`); break; }
+        if (draft.items.length >= MAX_PHOTOS) { toast(`一个瞬间最多 ${MAX_PHOTOS} 张照片`); break; }
         if (file.type && !file.type.startsWith("image/")) continue;
-        draft.files.push({ file, url: URL.createObjectURL(file) });
+        draft.items.push({ file, url: URL.createObjectURL(file) });
       }
       fileIn.value = ""; drawGrid(); validate();
     };
@@ -816,12 +988,17 @@
       try {
         const m = await saveMoment((s) => (go.textContent = s));
         const ch2 = draft.chain, f = finest(ch2), wasLit = lit.has(f.key);
-        draft.files.forEach((x) => URL.revokeObjectURL(x.url));
-        draft.note = ""; draft.files = []; draft.date = today(); draft.chain = null;
+        draft.items.forEach((x) => x.file && URL.revokeObjectURL(x.url));
+        if (editing) draft = newDraft;
+        else { draft.note = ""; draft.items = []; draft.date = today(); draft.chain = null; }
         if (state.year !== "all" && yearOf(m) !== state.year) state.year = "all";
         recompute();
-        pulse = { f, col: regionColor(f), t0: performance.now() };
-        toast(wasLit ? `又一个瞬间，留在了${chainName(ch2)}。` : `${chainName(ch2)}，亮了。`);
+        if (!wasLit || !editing) pulse = { f, col: regionColor(f), t0: performance.now() };
+        if (editing) {
+          toast("修改已保存");
+          const prev = state.stack[state.stack.length - 1];
+          if (prev && prev.type === "post") { back(); return; }
+        } else toast(wasLit ? `又一个瞬间，留在了${chainName(ch2)}。` : `${chainName(ch2)}，亮了。`);
         state.selected = f;
         openSheet({ type: "place", key: f.key, chain: ch2 }, true);
         flyTo(ch2.place ? [ch2.place.lon, ch2.place.lat] : f.c, fitK(f), 900);
@@ -832,20 +1009,32 @@
       }
     };
 
-    body.append(locBox, opts, ta, grid, fileIn,
+    body.append(locBox, opts, ta, grid, tip, fileIn,
       h("label", { class: "meta-row", for: "date" }, h("span", null, "日期"), dateIn),
       h("div", { class: "send" }, err, go, need));
     drawGrid(); validate();
-    return [head("新的瞬间"), body];
+    return [head(editing ? "编辑瞬间" : "新的瞬间"), body];
   }
-  async function compress(file, maxSide = 2048, q = .86) {
-    let src;
-    try { src = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+  async function loadBitmap(file) {
+    try { return await createImageBitmap(file, { imageOrientation: "from-image" }); }
     catch {
       const url = URL.createObjectURL(file);
-      try { src = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("无法读取图片")); i.src = url; }); }
+      try { return await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("无法读取图片")); i.src = url; }); }
       finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
     }
+  }
+  async function squareImage(file, side = 480) {
+    const src = await loadBitmap(file);
+    const w0 = src.width || src.naturalWidth, h0 = src.height || src.naturalHeight, s0 = Math.min(w0, h0);
+    const cv = document.createElement("canvas"); cv.width = cv.height = side;
+    cv.getContext("2d").drawImage(src, (w0 - s0) / 2, (h0 - s0) / 2, s0, s0, 0, 0, side, side);
+    if (src.close) src.close();
+    const blob = await new Promise((res) => cv.toBlob(res, "image/jpeg", .9));
+    if (!blob) throw new Error("无法处理图片");
+    return blob;
+  }
+  async function compress(file, maxSide = 2048, q = .86) {
+    const src = await loadBitmap(file);
     const w0 = src.width || src.naturalWidth, h0 = src.height || src.naturalHeight;
     const s = Math.min(1, maxSide / Math.max(w0, h0));
     const w = Math.round(w0 * s), hh = Math.round(h0 * s);
@@ -858,22 +1047,27 @@
   }
   async function saveMoment(progress) {
     if (!idb) throw new Error("这个浏览器无法保存记录");
-    const ch = draft.chain, photos = [];
-    for (let i = 0; i < draft.files.length; i++) {
-      progress(`整理照片 ${i + 1}/${draft.files.length}`);
-      photos.push(await compress(draft.files[i].file));
+    const ch = draft.chain, photos = [], fresh = draft.items.filter((x) => x.file).length;
+    let n = 0;
+    for (const x of draft.items) {
+      if (x.photo) { photos.push(x.photo); continue; }
+      progress(`整理照片 ${++n}/${fresh}`);
+      photos.push(await compress(x.file));
     }
     progress("正在保存…");
+    const old = draft.id ? moments.find((x) => x.id === draft.id) : null;
     const m = {
-      id: "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      ...(old || { comments: [] }),
+      id: old ? old.id : newId("m"),
       keys: { c: ch.c.key, a: ch.a ? ch.a.key : null, y: ch.y ? ch.y.key : null },
       names: { c: ch.c.name, a: ch.a ? (ch.a.country === CN ? ch.a.name : ch.a.name) : null, y: ch.y ? ch.y.name : null },
       place: ch.place || null,
-      date: draft.date || today(), note: draft.note.trim(), photos, createdAt: Date.now(),
+      date: draft.date || today(), note: draft.note.trim(), photos, createdAt: old ? old.createdAt : Date.now(),
     };
+    if (old) m.updatedAt = Date.now();
     try { await putMoment(m); }
     catch (e) { throw new Error(/quota/i.test(String(e && e.name)) ? "手机存储空间不够了" : "存储失败"); }
-    moments.push(m);
+    if (old) replaceMoment(m); else moments.push(m);
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     return m;
   }
@@ -891,20 +1085,24 @@
     const list = moments.filter(inYear).sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.createdAt - a.createdAt);
     const n = counts(list);
     const isAll = state.year === "all";
-    const title = isAll ? "此生足迹" : `${state.year} · 年度图鉴`;
-    const cov = coverFor(list);
+    const title = isAll ? "人生足迹" : `${state.year} · 年度图鉴`;
+    const cov = avatarFor(state.year, list);
+    const custom = avatars.has(String(state.year));
     const countriesLit = [...new Map(list.map((m) => [m.keys.c, m])).values()];
     const prof = h("div", { class: "prof" },
       h("div", { class: "prof-top" },
-        h("div", { class: "prof-av" }, h("img", { src: cov ? srcOf(cov) : "icons/icon-192.png", alt: "" })),
+        h("button", { class: "prof-av", type: "button", "aria-label": `更换「${yearLabel(state.year)}」的头像`, onclick: () => pickAvatar(state.year) },
+          h("img", { src: cov ? srcOf(cov) : "icons/icon-192.png", alt: "" }), h("span", { class: "cam" }, svg(ICON.cam))),
         h("div", { class: "prof-nums" },
           h("div", null, h("b", null, n.c), h("small", null, "国家与地区")), h("div", null, h("b", null, n.a), h("small", null, "省 · 州")),
           h("div", null, h("b", null, n.y), h("small", null, "城市")), h("div", null, h("b", null, n.m), h("small", null, "瞬间")))),
       h("div", null, h("h2", null, title),
         h("p", null, list.length ? (isAll ? `从第一个瞬间到现在，你一共点亮了 ${n.c} 个国家与地区、${n.y} 座城市。` : `这一年，你把光留在了 ${n.c} 个国家与地区、${n.y} 座城市。`) : "这一页还空着。")),
       countriesLit.length ? h("div", { class: "tags" }, countriesLit.map((m) => h("button", { class: "tag", type: "button", style: `--c:${countryColor(m.keys.c.slice(2))}`, onclick: async () => { const c = await featureForKey(m.keys.c, m); if (c) openPlace(c, true); } }, h("i"), m.names.c))) : null,
-      h("div", { class: "years", style: "padding:4px 0" }, [{ y: "all", label: "此生" }, ...yearsList().map((y) => ({ y, label: String(y) }))].map(({ y, label }) =>
-        h("button", { class: "tag", type: "button", style: state.year === y ? "background:var(--fg);color:var(--bg)" : "", onclick: () => { state.year = y; recompute(); } }, label))));
+      yearTags(),
+      h("div", { class: "prof-links" },
+        h("button", { class: "btn-line", type: "button", onclick: () => openSheet({ type: "share" }, false) }, "分享探索进度"),
+        custom ? h("button", { class: "link", type: "button", onclick: () => resetAvatar(state.year).catch(() => toast("没成功，再试一次")) }, "换回默认头像") : null));
     const grid = list.length ? h("div", { class: "grid3" }, list.map((m) => {
       const p = m.photos && m.photos[0];
       return h("button", { class: "cell", type: "button", "aria-label": m.place ? m.place.name : (m.names.y || m.names.a || m.names.c), onclick: () => openSheet({ type: "post", id: m.id }, false) },
@@ -913,6 +1111,191 @@
         h("span", { class: "nm" }, m.place ? m.place.name : (m.names.y || m.names.a || m.names.c)));
     })) : h("div", { class: "blank" }, h("b", null, isAll ? "the world is waiting" : "a quiet year"), isAll ? "去过的地方，轻点一下，留下一张照片和一句话。" : "这一年还没有被点亮的地方。");
     return [head(title), h("div", { class: "sh-body" }, prof, grid)];
+  }
+
+  function yearTags() {
+    return h("div", { class: "years", style: "padding:4px 0" }, yearItems().map(({ y, label }) =>
+      h("button", { class: "tag", type: "button", style: state.year === y ? "background:var(--fg);color:var(--bg)" : "", onclick: () => { state.year = y; recompute(); } }, label)));
+  }
+
+  // ----- share: a poster of everything lit so far
+  function shareView(v) {
+    const label = yearLabel(state.year);
+    const wrap = h("div", { class: "share-wrap" });
+    if (v.year !== state.year) { if (v.url) URL.revokeObjectURL(v.url); Object.assign(v, { year: state.year, url: null, blob: null, err: null, job: null }); }
+    if (!v.url) {
+      wrap.append(h("div", { class: "share-wait" }, v.err ? "没能生成图片，请再试一次" : "正在点亮地图…"));
+      if (!v.job && !v.err) {
+        const y = state.year;
+        v.job = makePoster(y).then((blob) => {
+          if (v.year !== y) return;
+          v.blob = blob; v.url = URL.createObjectURL(blob);
+          if (state.sheet === v) renderSheet();
+        }).catch((e) => { console.error(e); v.err = e; if (state.sheet === v) renderSheet(); });
+      }
+    } else {
+      const name = `TravelDiary-${label}足迹-${today()}.png`;
+      const file = new File([v.blob], name, { type: "image/png" });
+      let canShare = false;
+      try { canShare = !!(navigator.canShare && navigator.canShare({ files: [file] })); } catch {}
+      const save = () => {
+        const a = h("a", { href: v.url, download: name });
+        document.body.append(a); a.click(); setTimeout(() => a.remove(), 1000);
+      };
+      wrap.append(h("img", { class: "share-img", src: v.url, alt: `${label}的世界探索进度` }),
+        canShare ? h("button", { class: "btn-ig", type: "button", onclick: () => navigator.share({ files: [file], title: "我的世界探索", text: "走过的地方，会替你发光。" }).catch(() => {}) }, "分享图片") : null,
+        h("div", { class: "row-btns" }, h("button", { class: canShare ? "btn-line" : "btn-ig", type: "button", onclick: save }, "保存图片")),
+        h("p", { class: "note" }, "手机上也可以长按图片，直接存到相册。"));
+    }
+    wrap.append(yearTags());
+    return [head(`分享 · ${label}足迹`), h("div", { class: "sh-body" }, wrap)];
+  }
+
+  async function makePoster(year) {
+    const PW = 1080, PH = 1440, NUM = '"Helvetica Neue", "SF Pro Display", -apple-system, "Segoe UI", Roboto, Arial, sans-serif', SERIF = '"Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC", serif', SANS = C.font || "sans-serif";
+    const GOLD = ["#fff2d4", "#e6c27c", "#c9994a"];
+    const list = moments.filter((m) => year === "all" || yearOf(m) === year);
+    try { await Promise.all([document.fonts.load('italic 500 40px "Cormorant"'), document.fonts.load('400 40px "Cormorant"')]); } catch {}
+
+    // what is lit: whole countries (soft) and the finest place of every moment (bright)
+    const countryKeys = new Map(), finestKeys = new Map();
+    for (const m of list) {
+      countryKeys.set(m.keys.c, (countryKeys.get(m.keys.c) || 0) + 1);
+      const fk = m.keys.y || m.keys.a || m.keys.c; if (!finestKeys.has(fk)) finestKeys.set(fk, m);
+    }
+    const finestF = (await Promise.all([...finestKeys].map(([kk, m]) => featureForKey(kk, m).catch(() => null)))).filter(Boolean);
+    const countryF = [...countryKeys.keys()].map((kk) => byKey.get(kk)).filter(Boolean);
+    if (countryKeys.has("C:" + CN)) for (const id of ["344", "446"]) { const f = byKey.get("C:" + id); if (f) countryF.push(f); }
+    const total = countries.filter((f) => !["344", "446", "010"].includes(f.id)).length;
+
+    const cv = document.createElement("canvas"); cv.width = PW; cv.height = PH;
+    const g = cv.getContext("2d");
+    // background
+    g.fillStyle = "#05070d"; g.fillRect(0, 0, PW, PH);
+    const bg = g.createRadialGradient(PW / 2, 600, 0, PW / 2, 600, 820);
+    bg.addColorStop(0, "rgba(44,66,124,.42)"); bg.addColorStop(1, "rgba(44,66,124,0)");
+    g.fillStyle = bg; g.fillRect(0, 0, PW, PH);
+    let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < 160; i++) { g.beginPath(); g.arc(rnd() * PW, rnd() * PH, .6 + rnd() * 1.4, 0, 7); g.fillStyle = `rgba(220,228,255,${.05 + rnd() * .22})`; g.fill(); }
+    const goldFill = (y0, y1) => { const gr = g.createLinearGradient(0, y0, 0, y1); gr.addColorStop(0, GOLD[0]); gr.addColorStop(.5, GOLD[1]); gr.addColorStop(1, GOLD[2]); return gr; };
+
+    // header
+    g.textBaseline = "alphabetic";
+    g.font = 'italic 500 46px "Cormorant", Georgia, serif'; g.textAlign = "left"; g.fillStyle = goldFill(60, 104); g.fillText("TravelDiary", 72, 104);
+    const d = new Date();
+    g.font = `500 22px ${SANS}`; g.textAlign = "right"; g.fillStyle = "#8b93a7";
+    g.fillText(`${d.getFullYear()} · ${String(d.getMonth() + 1).padStart(2, "0")} · ${String(d.getDate()).padStart(2, "0")}`, PW - 72, 100);
+
+    // avatar + title
+    const ax = 72 + 60, ay = 228, ar = 60;
+    const ring = g.createLinearGradient(ax - ar, ay + ar, ax + ar, ay - ar);
+    [["#feda75", 0], ["#fa7e1e", .25], ["#d62976", .55], ["#962fbf", .8], ["#4f5bd5", 1]].forEach(([c, o]) => ring.addColorStop(o, c));
+    g.beginPath(); g.arc(ax, ay, ar, 0, 7); g.fillStyle = ring; g.fill();
+    g.beginPath(); g.arc(ax, ay, ar - 4, 0, 7); g.fillStyle = "#05070d"; g.fill();
+    const av = avatarFor(year, list);
+    const img = await new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = av ? srcOf(av) : "icons/icon-512.png"; });
+    if (img) {
+      const r = ar - 9, sc = Math.max(2 * r / img.naturalWidth, 2 * r / img.naturalHeight), w = img.naturalWidth * sc, hh = img.naturalHeight * sc;
+      g.save(); g.beginPath(); g.arc(ax, ay, r, 0, 7); g.clip(); g.drawImage(img, ax - w / 2, ay - hh / 2, w, hh); g.restore();
+    }
+    g.textAlign = "left"; g.fillStyle = "#f5f2ea"; g.font = `600 56px ${SERIF}`; g.fillText("我的世界探索", 226, 222);
+    g.fillStyle = "#a6adbf"; g.font = `400 25px ${SERIF}`;
+    g.fillText(`${year === "all" ? "人生足迹" : year + " 年度足迹"}  ·  ${list.length} 个瞬间`, 228, 270);
+
+    // dot-matrix world map
+    const top = 318, bottom = 878, left = 28, right = PW - 28;
+    const proj = d3.geoNaturalEarth1().fitExtent([[left, top], [right, bottom]],
+      { type: "MultiPoint", coordinates: [[-180, -57], [180, 83], [0, 83], [0, -57], [-180, 0], [180, 0], [-90, 83], [90, -57]] });
+    const mask = (feats, colorOf) => {
+      const m = document.createElement("canvas"); m.width = PW; m.height = PH;
+      const mc = m.getContext("2d"), pth = d3.geoPath(proj, mc);
+      for (const f of feats) { mc.beginPath(); pth(f); mc.fillStyle = colorOf(f); mc.fill(); }
+      return mc.getImageData(0, 0, PW, PH).data;
+    };
+    const landPx = mask(countries.filter((f) => f.id !== "010"), () => "#fff");
+    const countryPx = mask(countryF, (f) => countryColor(f.id === "344" || f.id === "446" ? CN : f.id));
+    const finestPx = mask(finestF, (f) => regionColor(f));
+    const STEP = 8, dim = [], soft = [], bright = [];
+    for (let y = top, row = 0; y <= bottom; y += STEP * .87, row++) {
+      for (let x = left + (row % 2 ? STEP / 2 : 0); x <= right; x += STEP) {
+        const i = (Math.round(y) * PW + Math.round(x)) * 4;
+        if (finestPx[i + 3] > 160) bright.push([x, y, `rgb(${finestPx[i]},${finestPx[i + 1]},${finestPx[i + 2]})`]);
+        else if (countryPx[i + 3] > 160) soft.push([x, y, `rgb(${countryPx[i]},${countryPx[i + 1]},${countryPx[i + 2]})`]);
+        else if (landPx[i + 3] > 128) dim.push([x, y]);
+      }
+    }
+    g.fillStyle = "rgba(160,178,220,.26)";
+    for (const [x, y] of dim) { g.beginPath(); g.arc(x, y, 2.1, 0, 7); g.fill(); }
+    g.globalAlpha = .55;
+    for (const [x, y, c] of soft) { g.beginPath(); g.arc(x, y, 2.5, 0, 7); g.fillStyle = c; g.fill(); }
+    g.globalAlpha = 1;
+    g.save(); g.globalCompositeOperation = "lighter"; g.shadowBlur = 10;
+    for (const [x, y, c] of bright) { g.shadowColor = c; g.beginPath(); g.arc(x, y, 2.9, 0, 7); g.fillStyle = c; g.fill(); }
+    g.restore();
+    // places too small to catch a dot, and town pins, still get a star
+    const ppath = d3.geoPath(proj);
+    const stars = [];
+    for (const f of finestF) if (ppath.area(f) < STEP * STEP * 2.5) { const p = proj(f.c); if (p) stars.push([p[0], p[1], regionColor(f)]); }
+    for (const m of list) if (m.place) { const p = proj([m.place.lon, m.place.lat]); if (p) stars.push([p[0], p[1], countryColor(m.keys.c.slice(2))]); }
+    for (const [x, y, c] of stars.slice(0, 80)) sparkle(g, x, y, 9, c);
+
+    // the big number
+    const pct = countryKeys.size / total * 100;
+    const pctTxt = pct === 0 ? "0" : pct < 10 ? pct.toFixed(1) : String(Math.round(pct));
+    g.textAlign = "left"; g.font = `200 168px ${NUM}`;
+    const nw = g.measureText(pctTxt).width;
+    const pg = g.createLinearGradient(72, 900, 72 + nw + 80, 1030); pg.addColorStop(0, GOLD[0]); pg.addColorStop(.45, GOLD[1]); pg.addColorStop(1, "#e88aa6");
+    g.fillStyle = pg; g.fillText(pctTxt, 66, 1030);
+    g.font = `200 64px ${NUM}`; g.fillText("%", 66 + nw + 6, 1030);
+    const lx = 66 + nw + 6 + g.measureText("%").width + 26;
+    g.fillStyle = "#f5f2ea"; g.font = `600 34px ${SERIF}`; g.fillText("的世界", lx, 976);
+    g.fillStyle = "#a6adbf"; g.font = `400 26px ${SERIF}`; g.fillText(`已被点亮 · ${countryKeys.size} / ${total} 个国家与地区`, lx, 1022);
+
+    // stats row
+    const n = counts(list);
+    g.fillStyle = "rgba(255,255,255,.1)"; g.fillRect(72, 1078, PW - 144, 1);
+    const cols = [[n.c, "国家与地区"], [n.a, "省 · 州"], [n.y, "城市"], [n.m, "瞬间"]], cw = (PW - 144) / 4;
+    cols.forEach(([num, lab], i) => {
+      const x = 72 + cw * i + cw / 2;
+      g.textAlign = "center"; g.fillStyle = "#f5f2ea"; g.font = `200 60px ${NUM}`; g.fillText(String(num), x, 1158);
+      g.fillStyle = "#8b93a7"; g.font = `400 22px ${SANS}`; g.fillText(lab, x, 1200);
+    });
+    g.fillStyle = "rgba(255,255,255,.1)"; g.fillRect(72, 1232, PW - 144, 1);
+
+    // country chips
+    const names = [...countryKeys].sort((a, b) => b[1] - a[1]).map(([kk]) => {
+      const m = list.find((x) => x.keys.c === kk); return { name: m.names.c, col: countryColor(kk.slice(2)) };
+    });
+    g.textAlign = "left"; g.font = `400 24px ${SANS}`;
+    if (!names.length) { g.fillStyle = "#8b93a7"; g.fillText("世界还在等你出发。", 72, 1286); }
+    let cx = 72, cy = 1284, line = 0, shown = 0;
+    for (const it of names) {
+      const w = g.measureText(it.name).width + 40;
+      if (cx + w > PW - 72) { line++; cx = 72; cy += 42; }
+      if (line > 1 || (line === 1 && cx + w + 120 > PW - 72 && shown < names.length - 1)) break;
+      g.beginPath(); g.arc(cx + 6, cy - 8, 6, 0, 7); g.fillStyle = it.col; g.fill();
+      g.fillStyle = "#d9dce4"; g.fillText(it.name, cx + 20, cy);
+      cx += w; shown++;
+    }
+    if (shown < names.length) { g.fillStyle = "#8b93a7"; g.fillText(`等 ${names.length} 个`, cx, cy); }
+
+    // footer
+    g.fillStyle = "#6f7689"; g.font = `400 22px ${SERIF}`; g.textAlign = "left"; g.fillText("走过的地方，会替你发光。", 72, PH - 64);
+    g.textAlign = "right"; g.font = 'italic 500 30px "Cormorant", Georgia, serif'; g.fillStyle = goldFill(PH - 92, PH - 62); g.fillText("TravelDiary", PW - 72, PH - 64);
+
+    const blob = await new Promise((res) => cv.toBlob(res, "image/png"));
+    if (!blob) throw new Error("无法生成图片");
+    return blob;
+  }
+  function sparkle(g, x, y, r, col) {
+    g.save(); g.globalCompositeOperation = "lighter";
+    const gr = g.createRadialGradient(x, y, 0, x, y, r * 1.8);
+    gr.addColorStop(0, "rgba(255,248,230,.9)"); gr.addColorStop(.3, col); gr.addColorStop(1, "rgba(0,0,0,0)");
+    g.globalAlpha = .7; g.fillStyle = gr; g.beginPath(); g.arc(x, y, r * 1.8, 0, 7); g.fill();
+    g.globalAlpha = 1; g.fillStyle = "rgba(255,250,236,.95)"; g.beginPath();
+    g.moveTo(x, y - r); g.quadraticCurveTo(x, y, x + r * .8, y); g.quadraticCurveTo(x, y, x, y + r);
+    g.quadraticCurveTo(x, y, x - r * .8, y); g.quadraticCurveTo(x, y, x, y - r); g.fill();
+    g.restore();
   }
 
   // ----- search
@@ -955,7 +1338,9 @@
           for (const p of m.photos) photos.push({ w: p.w, h: p.h, data: p.blob ? await blobToData(p.blob) : p.data });
           out.push({ ...m, photos });
         }
-        const blob = new Blob([JSON.stringify({ app: "traveldiary", v: 1, exportedAt: new Date().toISOString(), moments: out })], { type: "application/json" });
+        const av = {};
+        for (const [y, r] of avatars) av[y] = await blobToData(r.blob);
+        const blob = new Blob([JSON.stringify({ app: "traveldiary", v: 2, exportedAt: new Date().toISOString(), moments: out, avatars: av })], { type: "application/json" });
         const a = h("a", { href: URL.createObjectURL(blob), download: `TravelDiary-备份-${today()}.json` });
         document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
         status.textContent = `已导出 ${moments.length} 个瞬间（${(blob.size / 1048576).toFixed(1)} MB）。存到网盘或电脑里最安心。`;
@@ -974,6 +1359,11 @@
           const photos = [];
           for (const p of m.photos || []) photos.push({ w: p.w, h: p.h, blob: await (await fetch(p.data)).blob() });
           const mm = { ...m, photos }; await putMoment(mm); moments.push(mm); added++;
+        }
+        for (const [y, data] of Object.entries(j.avatars || {})) {
+          if (avatars.has(y)) continue;
+          const rec = { id: "avatar:" + y, blob: await (await fetch(data)).blob() };
+          await tx("readwrite", (s) => s.put(rec), "kv"); avatars.set(y, rec);
         }
         recompute(); status.textContent = `恢复了 ${added} 个瞬间。`;
       } catch (e) { status.textContent = "恢复失败：" + e.message; }
